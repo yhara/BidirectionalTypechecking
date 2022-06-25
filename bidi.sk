@@ -1,0 +1,579 @@
+enum Expression
+  case Variable(name: String)
+  case Unit
+  case Literal(val: Object)
+  case Abstraction(alpha: String, expr: Expression)
+  case Application(fn_expr: Expression, arg_expr: Expression)
+  case Annotation(expr: Expression, type: Type)
+
+  def to_s -> String
+    match self
+    when Unit
+      "()"
+    when Literal(val)
+      val.to_s
+    when Variable(name)
+      name
+    when Abstraction(alpha, expr)
+      "(\\#{alpha} -> #{expr})"
+    when Application(fn_expr, arg_expr)
+      "#{fn_expr} #{arg_expr}"
+    when Annotation(expr, type)
+      "(#{expr}: #{type})"
+    end
+  end
+end
+
+enum Type
+  case Unit
+  case Raw(name: String)
+  case Variable(name: String)
+  case Existential(name: String)
+  case Quantification(name: String, type: Type)
+  case Function(arg_ty: Type, ret_ty: Type)
+
+  def monotype? -> Bool
+    match self
+    when Quantification(_, _)
+      false
+    when Function(arg_ty, ret_ty)
+      arg_ty.monotype? and ret_ty.monotype?
+    else
+      true
+    end
+  end
+
+  def occurs?(alpha: String) -> Bool
+    match self
+    when Unit
+      false
+    when Raw(_)
+      false
+    when Variable(name)
+      alpha == name
+    when Function(arg_ty, ret_ty) 
+      arg_ty.occurs?(alpha) or ret_ty.occurs?(alpha)
+    when Quantification(name, type)
+      if alpha == name
+        true
+      else
+        type.occurs?(alpha)
+      end
+    when Existential(name) 
+      alpha == name
+    end
+  end
+
+  def substitute(alpha: String, t: Type) -> Type
+    match self
+    when Unit
+      self
+    when Raw(_)
+      self
+    when Variable(name)
+      if name == alpha then t else self end
+    when Quantification(name, type)
+      if name == alpha
+        Type::Quantification.new(name, t)
+      else
+        Type::Quantification.new(name, type.substitute(alpha, t))
+      end
+    when Existential(name)
+      if name == alpha then t else self end
+    when Function(arg_ty, ret_ty) 
+      Type::Function.new(
+        arg_ty.substitute(alpha, t),
+        ret_ty.substitute(alpha, t))
+    end
+  end
+
+  def to_s -> String
+    match self
+    when Unit
+      "()"
+    when Raw(name)
+      name
+    when Variable(name)
+      name
+    when Existential(name) 
+      "#{name}^"
+    when Quantification(name, type)
+      "(∀#{name}. #{type})"
+    when Function(arg_ty, ret_ty) 
+      "(#{arg_ty} -> #{ret_ty})"
+    end
+  end
+end
+
+enum ContextElement
+  case Variable(name: String)
+  case Existential(name: String)
+  case Solved(name: String, type: Type)
+  case Marker(name: String)
+  case TypedVariable(name: String, type: Type)
+
+  def ==(other: ContextElement) -> Bool
+    self.to_s == other.to_s
+  end
+
+  def to_s -> String
+    match self
+    when Variable(name)
+      name
+    when Existential(name) 
+      "#{name}^"
+    when Solved(name, type)
+      "#{name}^: #{type}"
+    when Marker(a) 
+      "<|#{a}"
+    when TypedVariable(x, ty)
+      "#{x}: #{ty}"
+    end
+  end
+end
+
+class Context
+  def self.empty -> Context
+    Context.new(Array<ContextElement>.new)
+  end
+
+  def initialize(elements: Array<ContextElement>)
+    @_elements = elements
+  end
+
+  # Returns new context which is self + [x]
+  def add(x: ContextElement) -> Context
+    a = @_elements.clone
+    a.push(x)
+    Context.new(a)
+  end
+
+  def clone -> Context
+    Context.new(@_elements.clone)
+  end
+
+  # Return the annotated type of variable `x`.
+  def get_annotation(x: String) -> Maybe<Type>
+    var ret = None
+    @_elements.each do |ele: ContextElement|
+      match ele
+      when ContextElement::TypedVariable(v, type)
+        if v == x
+          ret = Some.new(type)
+        end
+      else
+      end
+    end
+    ret
+  end
+
+  def get_solved(alpha: String) -> Maybe<Type>
+    var ret = None
+    @_elements.each do |ele: ContextElement|
+      match ele
+      when ContextElement::Solved(alpha1, tau)
+        if alpha == alpha1
+          ret = Some.new(tau)
+        end
+      else
+      end
+    end
+    ret
+  end
+
+  def has_existential?(alpha: String) -> Bool
+    @_elements.any?{|e: ContextElement|
+      match e
+      when ContextElement::Existential(name)
+        name == alpha
+      else
+        false
+      end
+    }
+  end
+
+  def has_variable?(alpha: String) -> Bool
+    @_elements.any?{|e: ContextElement|
+      match e
+      when ContextElement::Variable(name)
+        name == alpha
+      else
+        false
+      end
+    }
+  end
+
+  # Create a context without the elements starting from `element`.
+  # Panic if not found
+  def drop(element: ContextElement) -> Context
+    match @_elements.position{|x: ContextElement| x == element}
+    when Some(i)
+      match @_elements.split_at(i)
+      when Pair(left, right)
+        Context.new(left)
+      end
+    else
+      panic "drop: element \{element} not found"
+    end
+  end
+
+  # Creates two contexts. From head to just before `element`, from `element` to the end
+  def split_at(element: ContextElement) -> Pair<Context, Context>
+    match @_elements.position{|x: ContextElement| x == element}
+    when Some(i)
+      match @_elements.split_at(i)
+      when Pair(left, right)
+        Pair<Context, Context>.new(Context.new(left), Context.new(right))
+      end
+    else
+      panic "split_at: element \{element} not found"
+    end
+  end
+
+  # Make a new context by replacing `element` with `inserts`.
+  def replace(element: ContextElement, inserts: Array<ContextElement>) -> Context
+    match @_elements.position{|x: ContextElement| x == element}
+    when Some(i)
+      match @_elements.split_at(i-1)
+      when Pair(left, right)
+        Context.new(left + inserts + right)
+      end
+    else
+      panic "replace: element \{element} not found"
+    end
+  end
+
+  def check_well_formed(type: Type) -> Array<Error>
+    ok = Array<Error>.new
+    match type
+    when Type::Unit
+      ok
+    when Type::Raw(_)
+      ok
+    when Type::Variable(name)
+      if self.has_variable?(name)
+        ok
+      else
+        [Error.new("unknown variable `#{name}'")]
+      end
+    when Type::Function(arg_ty, ret_ty) 
+      check_well_formed(arg_ty) + check_well_formed(ret_ty)
+    when Type::Quantification(name, type)
+      self.add(ContextElement::Variable.new(name)).check_well_formed(type)
+    when Type::Existential(name)
+      if self.has_existential?(name) or get_solved(name).some?
+        ok
+      else
+        [Error.new("unknown existential `#{name}'")]
+      end
+    end
+  end
+
+  def well_formed?(type: Type) -> Bool
+    check_well_formed(type).empty?
+  end
+
+  def assert_well_formed(type: Type)
+    errors = check_well_formed(type)
+    if not errors.empty?
+      panic("!! not well formed: \{errors}")
+    end
+  end
+
+  def to_s -> String
+    "[" + @_elements.map<String>{|x: ContextElement| x.to_s}.join(", ") + "]"
+  end
+end
+
+class State
+  def initialize
+    var @id = 0
+  end
+
+  def fresh_existential -> String
+    ret = "t#{@id}"
+    @id += 1
+    ret
+  end
+end
+
+class Bidi
+  def run(expr: Expression)
+    print_header
+    t = synth(expr)
+    puts "result: \{t}"
+  end
+
+  def synth(expr: Expression) -> Type
+    t_c = synthesizes_to(State.new, Context.empty, expr)
+    puts "(synthesized type: \{t_c.fst}, context: \{t_c.snd})"
+    apply_context(t_c.fst, t_c.snd)
+  end
+
+  # Figure 11
+  def synthesizes_to(state: State, context: Context, expr: Expression) -> Pair<Type, Context>
+    print_helper("synth", expr.to_s, "", context)
+    match expr
+    when Expression::Unit
+      print_rule("1I=>")
+      Pair<Type, Context>.new(Type::Unit, context.clone())
+    when Expression::Literal(val)
+      print_rule("Literal")
+      match val
+      when Int
+        Pair<Type, Context>.new(Type::Raw.new("Int"), context.clone())
+      when Bool
+        Pair<Type, Context>.new(Type::Raw.new("Bool"), context.clone())
+      else
+        panic "!! synthesizes_to/Expression::Literal: unsupported val \{val}"
+      end
+    when Expression::Variable(x)
+      print_rule("Var")
+      match context.get_annotation(x)
+      when Some(annotation)
+        Pair<Type, Context>.new(annotation, context.clone())
+      else
+        panic("!! variable #{x} not found !!")
+      end
+    when Expression::Annotation(expr, annotation)
+      print_rule("Anno")
+      context.assert_well_formed(annotation)
+      delta = checks_against(state, context, expr, annotation)
+      Pair<Type, Context>.new(annotation, delta)
+
+    when Expression::Abstraction(varname, expr)
+      print_rule("->I=>");
+      alpha = state.fresh_existential
+      beta = state.fresh_existential
+      gamma = context.
+        add(ContextElement::Existential.new(alpha)).
+        add(ContextElement::Existential.new(beta)).
+        add(ContextElement::TypedVariable.new(varname, Type::Existential.new(alpha)))
+      delta = checks_against(state, gamma, expr, Type::Existential.new(beta))
+      func = Type::Function.new(Type::Existential.new(alpha),
+                                Type::Existential.new(beta))
+      Pair<Type, Context>.new(func, delta)
+
+    when Expression::Application(e1, e2)
+      print_rule("->E")
+      match synthesizes_to(state, context, e1)
+      when Pair(a, theta)
+        application_synthesizes_to(state, theta, apply_context(a, theta), e2)
+      end
+    end
+  end
+
+  # Figure 8
+  def apply_context(a: Type, context: Context) -> Type
+    match a
+    when Type::Unit
+      a
+    when Type::Raw(_)
+      a
+    when Type::Variable(_)
+      a
+    when Type::Existential(alpha)
+      match context.get_solved(alpha)
+      when Some(tau)
+        apply_context(tau, context)
+      else
+        a
+      end
+    when Type::Function(a, b)
+      Type::Function.new(apply_context(a, context),
+                         apply_context(b, context))
+    when Type::Quantification(alpha, a)
+      Type::Quantification.new(alpha, apply_context(a, context))
+    end
+  end
+
+  # Figure 11
+  # Mutates `state`
+  def checks_against(state: State, context: Context, expr: Expression, type: Type) -> Context
+    print_helper("check", expr.to_s, type.to_s, context)
+    context.assert_well_formed(type)
+    match Pair<Expression, Type>.new(expr, type)
+    when Pair(Expression::Unit, Type::Unit)
+      print_rule("1I")
+      context.clone()
+    when Pair(Expression::Abstraction(x, e), Type::Function(a, b))
+      print_rule("->I")
+      typed_var = ContextElement::TypedVariable.new(x, a)
+      gamma = context.add(typed_var)
+      checks_against(state, gamma, e, b).drop(typed_var)
+    when Pair(_, Type::Quantification(alpha, a))
+      print_rule("∀I")
+      v = ContextElement::Variable.new(alpha)
+      gamma = context.add(v)
+      checks_against(state, gamma, expr, a).drop(v)
+    else
+      print_rule("Sub")
+      match synthesizes_to(state, context, expr)
+      when Pair(a, theta)
+        subtype(state, theta, apply_context(a, theta), apply_context(type, theta))
+      end
+    end
+  end
+
+  # Figure 9
+  def subtype(state: State, context: Context, a: Type, b: Type) -> Context
+    ok = context.clone
+    print_helper("subtype", a.to_s, b.to_s, context)
+    context.assert_well_formed(a)
+    context.assert_well_formed(b)
+    match Pair<Type, Type>.new(a, b)
+    when Pair(Type::Unit, Type::Unit)
+      print_rule("<:Unit")
+      ok
+    when Pair(Type::Raw(a), Type::Raw(b))
+      print_rule("<:Raw")
+      if a == b
+        ok
+      else
+        panic "!! not sure #{a} is subtype of #{b}"
+      end
+    when Pair(Type::Variable(alpha1), Type::Variable(alpha2))
+      print_rule("<:Var")
+      if alpha1 == alpha2
+        ok
+      else
+        panic("!! #{alpha1} != #{alpha2}")
+      end
+    when Pair(Type::Existential(exist1), Type::Existential(exist2))
+      print_rule("<:Exvar")
+      if exist1 == exist2
+        ok
+      else
+        panic("!! #{exist1} != #{exist2}")
+      end
+    when Pair(Type::Function(a1, a2), Type::Function(b1, b2))
+      panic("todo <:->")
+    when Pair(Type::Quantification(alpha, a), _)
+      panic("todo <:∀L")
+      r1 = state.fresh_existential
+      gamma = context.
+        add(ContextElement::Marker.new(r1)).
+        add(ContextElement::Existential.new(r1))
+      aa = a.substitute(alpha, Type::Existential.new(r1))
+      delta = subtype(state, gamma, aa, b)
+      delta.drop(ContextElement::Marker.new(r1))
+    when Pair(_, Type::Quantification(alpha, a))
+      panic("todo <:∀R")
+    when Pair(Type::Existential(alpha), _)
+      if b.occurs?(alpha)
+        panic "!! Circular before instantiate_l \{alpha}, \{b}"
+      else
+        instantiate_l(state, context, alpha, b)
+      end
+    when Pair(_, Type::Existential(alpha))
+      if a.occurs?(alpha)
+        panic "!! Circular before instantiate_r \{alpha}, \{a}"
+      else
+        instantiate_r(state, context, a, alpha)
+      end
+    else
+      panic("!! couldn't subtype #{a} and #{b}")
+    end
+  end
+
+  # Figure 10
+  def instantiate_l(state: State, context: Context, alpha: String, b: Type) -> Context
+    print_helper("instantiate_l", alpha, b.to_s, context)
+    lr = context.split_at(ContextElement::Existential.new(alpha))
+    left_context = lr.fst
+    right_context = lr.snd
+
+    # InstLSolve
+    if b.monotype? and left_context.well_formed?(b)
+      print_rule("InstLSolve")
+      inserts = Array<ContextElement>.new()
+      inserts.push(ContextElement::Solved.new(alpha, b))
+      return context.replace(ContextElement::Existential.new(alpha), inserts)
+    end
+
+    panic "todo instantiate_l"
+  end
+
+  # Figure 10
+  def instantiate_r(state: State, context: Context, a: Type, alpha: String) -> Context
+    print_helper("instantiate_r", a.to_s, alpha, context)
+    lr = context.split_at(ContextElement::Existential.new(alpha))
+    left_context = lr.fst
+    right_context = lr.snd
+
+    # InstRSolve
+    if a.monotype? and left_context.well_formed?(a)
+      print_rule("InstRSolve")
+      inserts = Array<ContextElement>.new()
+      inserts.push(ContextElement::Solved.new(alpha, a))
+      return context.replace(ContextElement::Existential.new(alpha), inserts)
+    end
+
+    panic "todo instantiate_r"
+  end
+
+  # Figure 11
+  def application_synthesizes_to(state: State, context: Context, type: Type, expr: Expression) -> Pair<Type, Context>
+    print_helper("app_synth", expr.to_s, type.to_s, context)
+    match type
+    when Type::Existential(alpha)
+      panic "todo application_synthesizes_to 1"
+    when Type::Quantification(alpha, a)
+      print_rule("∀App")
+      alpha1 = state.fresh_existential
+      gamma = context.add(ContextElement::Existential.new(alpha1))
+      substituted_a = a.substitute(alpha, Type::Existential.new(alpha1))
+      application_synthesizes_to(state, gamma, substituted_a, expr)
+    when Type::Function(arg_ty, ret_ty) 
+      print_rule("->App")
+      delta = checks_against(state, context, expr, arg_ty)
+      Pair<Type, Context>.new(ret_ty, delta)
+    else
+      panic "!! application_synthesizes_to: unexpected type \{type}"
+    end
+  end
+
+  def print_header
+    puts "#{"fun".ljust(15, " ")} #{"c1".ljust(35, " ")}| #{"c2".ljust(25, " ")} context"
+  end
+
+  def print_helper(fun: String, c1: String, c2: String, context: Context)
+    puts "#{fun.ljust(15, " ")} #{c1.ljust(35, " ")}| #{c2.ljust(25, " ")} #{context}"
+  end
+
+  def print_rule(rule: String)
+    puts "  #{rule}"
+  end
+end
+
+ty_int = Type::Raw.new("Int")
+ty_bool = Type::Raw.new("Bool")
+
+unit = Expression::Unit
+
+# def foo<T>(x: T){ x }
+id = Expression::Annotation.new(
+  # fn(x){ x } 
+  Expression::Abstraction.new("x", Expression::Variable.new("x")),
+  # : ∀T. T -> T
+  Type::Quantification.new("T",
+    Type::Function.new(Type::Variable.new("T"), Type::Variable.new("T"))))
+
+# fn(a){ a: Unit }
+unit_id_anno = Expression::Abstraction.new("a",
+  Expression::Annotation.new(
+    Expression::Variable.new("a"),
+    Type::Unit))
+
+#e = Expression::Application.new(id, unit)
+
+int_val = Expression::Literal.new(123)
+# odd?(n: Int) -> Bool
+odd_p = Expression::Annotation.new(
+  Expression::Abstraction.new("n", Expression::Literal.new(true)),
+  Type::Function.new(ty_int, ty_bool))
+
+#ty_ary_int = Type::Quantification.new("T"
+
+e = Expression::Application.new(id, int_val)
+Bidi.new.run(e)
