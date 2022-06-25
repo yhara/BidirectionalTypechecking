@@ -1,23 +1,23 @@
 enum Expression
-  case Variable(name: String)
-  case Unit
   case Literal(val: Object)
+  case Variable(name: String)
+  case Extern(name: String, type: Type, body: Expression)
   case Abstraction(alpha: String, expr: Expression)
   case Application(fn_expr: Expression, arg_expr: Expression)
   case Annotation(expr: Expression, type: Type)
 
   def to_s -> String
     match self
-    when Unit
-      "()"
     when Literal(val)
       val.to_s
     when Variable(name)
       name
+    when Extern(name, type, body)
+      "with #{name}: #{type}|#{body}"
     when Abstraction(alpha, expr)
       "(\\#{alpha} -> #{expr})"
     when Application(fn_expr, arg_expr)
-      "#{fn_expr} #{arg_expr}"
+      "#{fn_expr}(#{arg_expr})"
     when Annotation(expr, type)
       "(#{expr}: #{type})"
     end
@@ -25,8 +25,7 @@ enum Expression
 end
 
 enum Type
-  case Unit
-  case Raw(name: String)
+  case Raw(name: String, tyargs: Array<Type>)
   case Variable(name: String)
   case Existential(name: String)
   case Quantification(name: String, type: Type)
@@ -45,10 +44,8 @@ enum Type
 
   def occurs?(alpha: String) -> Bool
     match self
-    when Unit
-      false
-    when Raw(_)
-      false
+    when Raw(_, tyargs)
+      tyargs.any?{|t: Type| t.occurs?(alpha)}
     when Variable(name)
       alpha == name
     when Function(arg_ty, ret_ty) 
@@ -66,10 +63,9 @@ enum Type
 
   def substitute(alpha: String, t: Type) -> Type
     match self
-    when Unit
-      self
-    when Raw(_)
-      self
+    when Raw(name, tyargs)
+      new_args = tyargs.map<Type>{|ty: Type| ty.substitute(alpha, t)}
+      Type::Raw.new(name, new_args)
     when Variable(name)
       if name == alpha then t else self end
     when Quantification(name, type)
@@ -89,10 +85,13 @@ enum Type
 
   def to_s -> String
     match self
-    when Unit
-      "()"
-    when Raw(name)
-      name
+    when Raw(name, tyargs)
+      if tyargs.empty?
+        name
+      else
+        args = tyargs.map<String>{|t: Type| t.to_s}.join(", ")
+        "#{name}<#{args}>"
+      end
     when Variable(name)
       name
     when Existential(name) 
@@ -246,10 +245,8 @@ class Context
   def check_well_formed(type: Type) -> Array<Error>
     ok = Array<Error>.new
     match type
-    when Type::Unit
-      ok
-    when Type::Raw(_)
-      ok
+    when Type::Raw(_, tyargs)
+      tyargs.flat_map<Error>{|t: Type| check_well_formed(t)}
     when Type::Variable(name)
       if self.has_variable?(name)
         ok
@@ -314,16 +311,13 @@ class Bidi
   def synthesizes_to(state: State, context: Context, expr: Expression) -> Pair<Type, Context>
     print_helper("synth", expr.to_s, "", context)
     match expr
-    when Expression::Unit
-      print_rule("1I=>")
-      Pair<Type, Context>.new(Type::Unit, context.clone())
     when Expression::Literal(val)
       print_rule("Literal")
       match val
       when Int
-        Pair<Type, Context>.new(Type::Raw.new("Int"), context.clone())
+        Pair<Type, Context>.new(Type::Raw.new("Int", Array<Type>.new), context.clone())
       when Bool
-        Pair<Type, Context>.new(Type::Raw.new("Bool"), context.clone())
+        Pair<Type, Context>.new(Type::Raw.new("Bool", Array<Type>.new), context.clone())
       else
         panic "!! synthesizes_to/Expression::Literal: unsupported val \{val}"
       end
@@ -335,6 +329,16 @@ class Bidi
       else
         panic("!! variable #{x} not found !!")
       end
+    when Expression::Extern(name, type, body_expr)
+      print_rule("Extern")
+      theta = context.add(ContextElement::TypedVariable.new(name, type))
+      match synthesizes_to(state, theta, body_expr)
+      when Pair(t, delta)
+        delta2 = delta.replace(ContextElement::TypedVariable.new(name, type),
+                               Array<ContextElement>.new)
+        Pair<Type, Context>.new(t, delta2)
+      end
+
     when Expression::Annotation(expr, annotation)
       print_rule("Anno")
       context.assert_well_formed(annotation)
@@ -366,10 +370,8 @@ class Bidi
   # Figure 8
   def apply_context(a: Type, context: Context) -> Type
     match a
-    when Type::Unit
-      a
-    when Type::Raw(_)
-      a
+    when Type::Raw(name, tyargs)
+      Type::Raw.new(name, tyargs.map<Type>{|t: Type| apply_context(t, context)})
     when Type::Variable(_)
       a
     when Type::Existential(alpha)
@@ -393,9 +395,6 @@ class Bidi
     print_helper("check", expr.to_s, type.to_s, context)
     context.assert_well_formed(type)
     match Pair<Expression, Type>.new(expr, type)
-    when Pair(Expression::Unit, Type::Unit)
-      print_rule("1I")
-      context.clone()
     when Pair(Expression::Abstraction(x, e), Type::Function(a, b))
       print_rule("->I")
       typed_var = ContextElement::TypedVariable.new(x, a)
@@ -422,13 +421,19 @@ class Bidi
     context.assert_well_formed(a)
     context.assert_well_formed(b)
     match Pair<Type, Type>.new(a, b)
-    when Pair(Type::Unit, Type::Unit)
-      print_rule("<:Unit")
-      ok
-    when Pair(Type::Raw(a), Type::Raw(b))
+    when Pair(Type::Raw(a_name, a_args), Type::Raw(b_name, b_args))
       print_rule("<:Raw")
-      if a == b
-        ok
+      if a_name == b_name
+        if a_args == b_args
+          ok
+        else
+          panic "arity mismatch" if a_args.length != b_args.length
+          var c = context
+          0.upto(a_args.length-1) do |i: Int|
+            c = subtype(state, c, a_args[i], b_args[i])
+          end
+          c  # TODO: Really?
+        end
       else
         panic "!! not sure #{a} is subtype of #{b}"
       end
@@ -546,10 +551,8 @@ class Bidi
   end
 end
 
-ty_int = Type::Raw.new("Int")
-ty_bool = Type::Raw.new("Bool")
-
-unit = Expression::Unit
+ty_int = Type::Raw.new("Int", Array<Type>.new)
+ty_bool = Type::Raw.new("Bool", Array<Type>.new)
 
 # def foo<T>(x: T){ x }
 id = Expression::Annotation.new(
@@ -559,11 +562,9 @@ id = Expression::Annotation.new(
   Type::Quantification.new("T",
     Type::Function.new(Type::Variable.new("T"), Type::Variable.new("T"))))
 
-# fn(a){ a: Unit }
+# fn(a){ a: Int }
 unit_id_anno = Expression::Abstraction.new("a",
-  Expression::Annotation.new(
-    Expression::Variable.new("a"),
-    Type::Unit))
+  Expression::Annotation.new(Expression::Variable.new("a"), ty_int))
 
 #e = Expression::Application.new(id, unit)
 
@@ -573,7 +574,29 @@ odd_p = Expression::Annotation.new(
   Expression::Abstraction.new("n", Expression::Literal.new(true)),
   Type::Function.new(ty_int, ty_bool))
 
-#ty_ary_int = Type::Quantification.new("T"
+#ty_ary_int = Type::Raw.new("Array", [ty_int])
+# Array#each<U>(self: Array<T>, f: T -> U) -> Array<U>
+#ary_first = Expression::Annotation.new(
+#  Expression::Abstraction.new("self", Expression::Literal.new(true)),
+#  Type::Function.new(ty_int, ty_bool))
 
-e = Expression::Application.new(id, int_val)
+with_ary_first = fn(e: Expression){
+  t_ = Array<Type>.new; t_.push(Type::Variable.new("T"))
+  ty_ary_t = Type::Raw.new("Array", t_)
+  Expression::Extern.new("Array#first",
+    Type::Quantification.new("T",
+      Type::Function.new(ty_ary_t, Type::Variable.new("T"))),
+    e)
+}
+with_int_ary = fn(name: String, e: Expression){
+  t_ = Array<Type>.new; t_.push(Type::Raw.new("Int", Array<Type>.new))
+  ty_ary_int = Type::Raw.new("Array", t_)
+  Expression::Extern.new(name, ty_ary_int, e)
+}
+
+e = with_ary_first(
+  with_int_ary("nums",
+               Expression::Application.new(
+                 Expression::Variable.new("Array#first"),
+                 Expression::Variable.new("nums"))))
 Bidi.new.run(e)
