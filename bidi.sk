@@ -2,8 +2,8 @@ enum Expression
   case Literal(val: Object)
   case Variable(name: String)
   case Extern(name: String, type: Type, body: Expression)
-  case Abstraction(alphas: Array<String>, expr: Expression)
-  case Application(fn_expr: Expression, arg_exprs: Array<Expression>)
+  case Abstraction(alpha: String, expr: Expression)
+  case Application(fn_expr: Expression, arg_expr: Expression)
   case Annotation(expr: Expression, type: Type)
 
   def to_s -> String
@@ -14,10 +14,10 @@ enum Expression
       name
     when Extern(name, type, body)
       "with #{name}: #{type}|#{body}"
-    when Abstraction(alphas, expr)
-      "(\\#{alphas} -> #{expr})"
-    when Application(fn_expr, arg_exprs)
-      "#{fn_expr}(#{arg_exprs.join(", ")})"
+    when Abstraction(alpha, expr)
+      "(\\#{alpha} -> #{expr})"
+    when Application(fn_expr, arg_expr)
+      "#{fn_expr}(#{arg_expr})"
     when Annotation(expr, type)
       "(#{expr}: #{type})"
     end
@@ -29,14 +29,14 @@ enum Type
   case Variable(name: String)
   case Existential(name: String)
   case Quantification(name: String, type: Type)
-  case Function(arg_tys: Array<Type>, ret_ty: Type)
+  case Function(arg_ty: Type, ret_ty: Type)
 
   def monotype? -> Bool
     match self
     when Quantification(_, _)
       false
-    when Function(arg_tys, ret_ty)
-      arg_tys.all?{|x: Type| x.monotype?} and ret_ty.monotype?
+    when Function(arg_ty, ret_ty)
+      arg_ty.monotype? and ret_ty.monotype?
     else
       true
     end
@@ -48,8 +48,8 @@ enum Type
       tyargs.any?{|t: Type| t.occurs?(alpha)}
     when Variable(name)
       alpha == name
-    when Function(arg_tys, ret_ty) 
-      arg_tys.any?{|x: Type| x.occurs?(alpha)} or ret_ty.occurs?(alpha)
+    when Function(arg_ty, ret_ty) 
+      arg_ty.occurs?(alpha) or ret_ty.occurs?(alpha)
     when Quantification(name, type)
       if alpha == name
         true
@@ -76,9 +76,9 @@ enum Type
       end
     when Existential(name)
       if name == alpha then t else self end
-    when Function(arg_tys, ret_ty) 
+    when Function(arg_ty, ret_ty) 
       Type::Function.new(
-        arg_tys.map<Type>{|x: Type| x.substitute(alpha, t)},
+        arg_ty.substitute(alpha, t),
         ret_ty.substitute(alpha, t))
     end
   end
@@ -98,8 +98,8 @@ enum Type
       "#{name}^"
     when Quantification(name, type)
       "(∀#{name}. #{type})"
-    when Function(arg_tys, ret_ty) 
-      "(\{arg_tys} -> #{ret_ty})"
+    when Function(arg_ty, ret_ty) 
+      "(#{arg_ty} -> #{ret_ty})"
     end
   end
 end
@@ -216,12 +216,6 @@ class Context
     end
   end
 
-  def drop_n(elements: Array<ContextElement>) -> Context
-    elements.fold<Context>(self){|c: Context, e: ContextElement|
-      c.drop(e)
-    }
-  end
-
   # Creates two contexts. From head to just before `element`, from `element` to the end
   def split_at(element: ContextElement) -> Pair<Context, Context>
     match @_elements.position{|x: ContextElement| x == element}
@@ -259,9 +253,8 @@ class Context
       else
         [Error.new("unknown variable `#{name}'")]
       end
-    when Type::Function(arg_tys, ret_ty) 
-      arg_tys.flat_map<Error>{|t: Type| check_well_formed(t)} + 
-        check_well_formed(ret_ty)
+    when Type::Function(arg_ty, ret_ty) 
+      check_well_formed(arg_ty) + check_well_formed(ret_ty)
     when Type::Quantification(name, type)
       self.add(ContextElement::Variable.new(name)).check_well_formed(type)
     when Type::Existential(name)
@@ -352,34 +345,24 @@ class Bidi
       delta = checks_against(state, context, expr, annotation)
       Pair<Type, Context>.new(annotation, delta)
 
-    when Expression::Abstraction(varnames, expr)
+    when Expression::Abstraction(varname, expr)
       print_rule("->I=>");
-      alphas = varnames.map<String>{|v: String| state.fresh_existential}
+      alpha = state.fresh_existential
       beta = state.fresh_existential
-      var ctx_elems = alphas.map<ContextElement>{|alpha: String|
-        ContextElement::Existential.new(alpha).unsafe_cast(ContextElement)
-      }
-      ctx_elems += [ContextElement::Existential.new(beta).unsafe_cast(ContextElement)]
-      ctx_elems += Enumerable.zip<String, String>(varnames, alphas).
-        map<ContextElement>{|pair: Pair<String, String>|
-          match pair
-          when Pair(varname, alpha)
-            ContextElement::TypedVariable.new(varname, Type::Existential.new(alpha)).unsafe_cast(ContextElement)
-          end
-        }
-      gamma = ctx_elems.fold<Context>(context){|c: Context, e: ContextElement| c.add(e)}
+      gamma = context.
+        add(ContextElement::Existential.new(alpha)).
+        add(ContextElement::Existential.new(beta)).
+        add(ContextElement::TypedVariable.new(varname, Type::Existential.new(alpha)))
       delta = checks_against(state, gamma, expr, Type::Existential.new(beta))
-      params = alphas.map<Type>{|alpha: String|
-        Type::Existential.new(alpha).unsafe_cast(Type)
-      }
-      func = Type::Function.new(params, Type::Existential.new(beta))
+      func = Type::Function.new(Type::Existential.new(alpha),
+                                Type::Existential.new(beta))
       Pair<Type, Context>.new(func, delta)
 
-    when Expression::Application(fn_expr, arg_exprs)
+    when Expression::Application(e1, e2)
       print_rule("->E")
-      match synthesizes_to(state, context, fn_expr)
+      match synthesizes_to(state, context, e1)
       when Pair(a, theta)
-        application_synthesizes_to(state, theta, apply_context(a, theta), arg_exprs)
+        application_synthesizes_to(state, theta, apply_context(a, theta), e2)
       end
     end
   end
@@ -398,9 +381,9 @@ class Bidi
       else
         a
       end
-    when Type::Function(arg_tys, ret_ty)
-      Type::Function.new(arg_tys.map<Type>{|t: Type| apply_context(t, context)},
-                         apply_context(ret_ty, context))
+    when Type::Function(a, b)
+      Type::Function.new(apply_context(a, context),
+                         apply_context(b, context))
     when Type::Quantification(alpha, a)
       Type::Quantification.new(alpha, apply_context(a, context))
     end
@@ -412,18 +395,11 @@ class Bidi
     print_helper("check", expr.to_s, type.to_s, context)
     context.assert_well_formed(type)
     match Pair<Expression, Type>.new(expr, type)
-    when Pair(Expression::Abstraction(param_names, body_expr), Type::Function(param_tys, ret_ty))
+    when Pair(Expression::Abstraction(x, e), Type::Function(a, b))
       print_rule("->I")
-      typed_vars = Enumerable.zip<String, Type>(param_names, param_tys).map<ContextElement>{|pair: Pair<String, Type>|
-        match pair
-        when Pair(param_name, param_ty)
-          ContextElement::TypedVariable.new(param_name, param_ty).unsafe_cast(ContextElement)
-        end
-      }
-      gamma = typed_vars.fold<Context>(context){|c: Context, typed_var: ContextElement|
-        c.add(typed_var)
-      }
-      checks_against(state, gamma, body_expr, ret_ty).drop_n(typed_vars)
+      typed_var = ContextElement::TypedVariable.new(x, a)
+      gamma = context.add(typed_var)
+      checks_against(state, gamma, e, b).drop(typed_var)
     when Pair(_, Type::Quantification(alpha, a))
       print_rule("∀I")
       v = ContextElement::Variable.new(alpha)
@@ -542,8 +518,8 @@ class Bidi
   end
 
   # Figure 11
-  def application_synthesizes_to(state: State, context: Context, type: Type, arg_exprs: Array<Expression>) -> Pair<Type, Context>
-    print_helper("app_synth", arg_exprs.to_s, type.to_s, context)
+  def application_synthesizes_to(state: State, context: Context, type: Type, expr: Expression) -> Pair<Type, Context>
+    print_helper("app_synth", expr.to_s, type.to_s, context)
     match type
     when Type::Existential(alpha)
       panic "todo application_synthesizes_to 1"
@@ -552,18 +528,11 @@ class Bidi
       alpha1 = state.fresh_existential
       gamma = context.add(ContextElement::Existential.new(alpha1))
       substituted_a = a.substitute(alpha, Type::Existential.new(alpha1))
-      application_synthesizes_to(state, gamma, substituted_a, arg_exprs)
-    when Type::Function(arg_tys, ret_ty) 
+      application_synthesizes_to(state, gamma, substituted_a, expr)
+    when Type::Function(arg_ty, ret_ty) 
       print_rule("->App")
-      panic "!! arity mismatch" if arg_tys.length != arg_exprs.length
-      var c = context
-      Enumerable.zip<Type,Expression>(arg_tys, arg_exprs).each do |pair: Pair<Type, Expression>|
-        match pair
-        when Pair(arg_ty, arg_expr)
-          c = checks_against(state, c, arg_expr, arg_ty)
-        end
-      end
-      Pair<Type, Context>.new(ret_ty, c)
+      delta = checks_against(state, context, expr, arg_ty)
+      Pair<Type, Context>.new(ret_ty, delta)
     else
       panic "!! application_synthesizes_to: unexpected type \{type}"
     end
@@ -583,55 +552,51 @@ class Bidi
 end
 
 ty_int = Type::Raw.new("Int", Array<Type>.new)
-ty_int_ = [Type::Raw.new("Int", Array<Type>.new)].unsafe_cast(Array<Type>)
 ty_bool = Type::Raw.new("Bool", Array<Type>.new)
-t_ = Array<Type>.new; t_.push(Type::Variable.new("T"))
-ty_ary_t = Type::Raw.new("Array", t_)
-ty_ary_t_ = [Type::Raw.new("Array", t_)].unsafe_cast(Array<Type>)
 
-## def foo<T>(x: T){ x }
-#id = Expression::Annotation.new(
-#  # fn(x){ x } 
-#  Expression::Abstraction.new(["x"], Expression::Variable.new("x")),
-#  # : ∀T. T -> T
-#  Type::Quantification.new("T",
-#    Type::Function.new(Type::Variable.new("T"), Type::Variable.new("T"))))
-#
-## fn(a){ a: Int }
-#unit_id_anno = Expression::Abstraction.new(["a"],
-#  Expression::Annotation.new(Expression::Variable.new("a"), ty_int))
+# def foo<T>(x: T){ x }
+id = Expression::Annotation.new(
+  # fn(x){ x } 
+  Expression::Abstraction.new("x", Expression::Variable.new("x")),
+  # : ∀T. T -> T
+  Type::Quantification.new("T",
+    Type::Function.new(Type::Variable.new("T"), Type::Variable.new("T"))))
 
+# fn(a){ a: Int }
+unit_id_anno = Expression::Abstraction.new("a",
+  Expression::Annotation.new(Expression::Variable.new("a"), ty_int))
+
+#e = Expression::Application.new(id, unit)
 
 int_val = Expression::Literal.new(123)
 # odd?(n: Int) -> Bool
-#odd_p = Expression::Annotation.new(
-#  Expression::Abstraction.new(["n"], Expression::Literal.new(true)),
-#  Type::Function.new(ty_int_, ty_bool))
+odd_p = Expression::Annotation.new(
+  Expression::Abstraction.new("n", Expression::Literal.new(true)),
+  Type::Function.new(ty_int, ty_bool))
+
+#ty_ary_int = Type::Raw.new("Array", [ty_int])
+# Array#each<U>(self: Array<T>, f: T -> U) -> Array<U>
+#ary_first = Expression::Annotation.new(
+#  Expression::Abstraction.new("self", Expression::Literal.new(true)),
+#  Type::Function.new(ty_int, ty_bool))
 
 with_ary_first = fn(e: Expression){
+  t_ = Array<Type>.new; t_.push(Type::Variable.new("T"))
+  ty_ary_t = Type::Raw.new("Array", t_)
   Expression::Extern.new("Array#first",
     Type::Quantification.new("T",
-      Type::Function.new(ty_ary_t_, Type::Variable.new("T"))),
+      Type::Function.new(ty_ary_t, Type::Variable.new("T"))),
     e)
 }
-# Array#each<U>(self: Array<T>, f: T -> U) -> Array<U>
-#with_ary_each = fn(e: Expression){
-#  t_ = Array<Type>.new; t_.push(Type::Variable.new("T"))
-#  ty_ary_t = Type::Raw.new("Array", t_)
-#  Expression::Extern.new("Array#each",
-#    Type::Quantification.new("T",
-#      Type::Function.new(ty_ary_t, Type::Variable.new("T"))),
-#    e)
-#}
 with_int_ary = fn(name: String, e: Expression){
-  ty_ary_int = Type::Raw.new("Array", ty_int_)
+  t_ = Array<Type>.new; t_.push(Type::Raw.new("Int", Array<Type>.new))
+  ty_ary_int = Type::Raw.new("Array", t_)
   Expression::Extern.new(name, ty_ary_int, e)
 }
 
-args = [Expression::Variable.new("nums")].unsafe_cast(Array<Expression>)
 e = with_ary_first(
   with_int_ary("nums",
                Expression::Application.new(
                  Expression::Variable.new("Array#first"),
-                 args)))
+                 Expression::Variable.new("nums"))))
 Bidi.new.run(e)
