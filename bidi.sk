@@ -543,7 +543,7 @@ class Bidi
 
   # Figure 11
   def application_synthesizes_to(state: State, context: Context, type: Type, arg_exprs: Array<Expression>) -> Pair<Type, Context>
-    print_helper("app_synth", arg_exprs.to_s, type.to_s, context)
+    print_helper("app_synth", arg_exprs.inspect, type.to_s, context)
     match type
     when Type::Existential(alpha)
       panic "todo application_synthesizes_to 1"
@@ -588,6 +588,7 @@ ty_bool = Type::Raw.new("Bool", Array<Type>.new)
 t_ = Array<Type>.new; t_.push(Type::Variable.new("T"))
 ty_ary_t = Type::Raw.new("Array", t_)
 ty_ary_t_ = [Type::Raw.new("Array", t_)].unsafe_cast(Array<Type>)
+ty_str = Type::Raw.new("String", Array<Type>.new)
 
 ## def foo<T>(x: T){ x }
 #id = Expression::Annotation.new(
@@ -608,30 +609,51 @@ int_val = Expression::Literal.new(123)
 #  Expression::Abstraction.new(["n"], Expression::Literal.new(true)),
 #  Type::Function.new(ty_int_, ty_bool))
 
-with_ary_first = fn(e: Expression){
-  Expression::Extern.new("Array#first",
-    Type::Quantification.new("T",
-      Type::Function.new(ty_ary_t_, Type::Variable.new("T"))),
-    e)
-}
-# Array#each<U>(self: Array<T>, f: T -> U) -> Array<U>
-#with_ary_each = fn(e: Expression){
-#  t_ = Array<Type>.new; t_.push(Type::Variable.new("T"))
-#  ty_ary_t = Type::Raw.new("Array", t_)
-#  Expression::Extern.new("Array#each",
+#with_ary_first = fn(e: Expression){
+#  Expression::Extern.new("Array#first",
 #    Type::Quantification.new("T",
-#      Type::Function.new(ty_ary_t, Type::Variable.new("T"))),
+#      Type::Function.new(ty_ary_t_, Type::Variable.new("T"))),
 #    e)
 #}
 with_int_ary = fn(name: String, e: Expression){
   ty_ary_int = Type::Raw.new("Array", ty_int_)
   Expression::Extern.new(name, ty_ary_int, e)
 }
+#
+#args = [Expression::Variable.new("nums")].unsafe_cast(Array<Expression>)
+#e = with_ary_first(
+#  with_int_ary("nums",
+#               Expression::Application.new(
+#                 Expression::Variable.new("Array#first"),
+#                 args)))
 
-args = [Expression::Variable.new("nums")].unsafe_cast(Array<Expression>)
-e = with_ary_first(
+# Array#map<U>(self: Array<T>, f: T -> U) -> Array<U>
+with_ary_map = fn(e: Expression){
+  #t_ = [Type::Variable.new("T")].unsafe_cast(Array<Type>)
+  u = Type::Variable.new("U")
+  u_ = [u].unsafe_cast(Array<Type>)
+  #ty_ary_t = Type::Raw.new("Array", t_)
+  ty_f = Type::Function.new(t_, u)
+  Expression::Extern.new("Array#map",
+    Type::Quantification.new("T",
+      Type::Quantification.new("U",
+        Type::Function.new([ty_ary_t, ty_f], u))),
+    e)
+}
+with_int_to_s = fn(e: Expression){
+  Expression::Extern.new("Int#to_s",
+    Type::Function.new(ty_int_, ty_str),
+    e)
+}
+
+# nums is Array<Int>
+# nums.map{ _.to_s }
+e = with_ary_map(
+  with_int_to_s(
   with_int_ary("nums",
-               Expression::Application.new(
-                 Expression::Variable.new("Array#first"),
-                 args)))
+    Expression::Application.new(
+      Expression::Variable.new("Array#map"),
+      [Expression::Variable.new("nums"),
+       Expression::Variable.new("Int#to_s")].unsafe_cast(Array<Expression>))
+              )))
 Bidi.new.run(e)
