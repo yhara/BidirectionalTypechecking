@@ -120,11 +120,11 @@ enum Type
     when Variable(name)
       name
     when Existential(name) 
-      "#{name}^"
+      "^#{name}"
     when Quantification(name, type)
-      "(∀#{name}. #{type})"
+      "∀#{name}. #{type}"
     when Function(arg_ty, ret_ty) 
-      "(#{arg_ty} -> #{ret_ty})"
+      "#{arg_ty} -> #{ret_ty}"
     when List(elem_ty)
       "[#{elem_ty}]"
     end

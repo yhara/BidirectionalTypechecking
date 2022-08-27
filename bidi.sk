@@ -16,9 +16,9 @@ enum ContextElement
     when Variable(name)
       name
     when Existential(name) 
-      "#{name}^"
+      "^#{name}"
     when Solved(name, type)
-      "#{name}^: #{type}"
+      "^#{name}: #{type}"
     when Marker(a) 
       "<|#{a}"
     when TypedVariable(x, ty)
@@ -189,7 +189,7 @@ class State
   end
 
   def fresh_existential -> String
-    ret = "t#{@id}"
+    ret = "#{@id}"
     @id += 1
     ret
   end
@@ -492,56 +492,6 @@ class Bidi
     puts "  #{rule}"
   end
 end
-
-ty_int = Type::Raw.new("Int")
-ty_bool = Type::Raw.new("Bool")
-
-# def foo<T>(x: T){ x }
-id = Expression::Annotation.new(
-  # fn(x){ x } 
-  Expression::Abstraction.new("x", Expression::Variable.new("x")),
-  # : ∀T. T -> T
-  Type::Quantification.new("T",
-    Type::Function.new(Type::Variable.new("T"), Type::Variable.new("T"))))
-
-# fn(a){ a: Int }
-unit_id_anno = Expression::Abstraction.new("a",
-  Expression::Annotation.new(Expression::Variable.new("a"), ty_int))
-
-#e = Expression::Application.new(id, unit)
-
-int_val = Expression::Literal.new(123)
-# odd?(n: Int) -> Bool
-odd_p = Expression::Annotation.new(
-  Expression::Abstraction.new("n", Expression::Literal.new(true)),
-  Type::Function.new(ty_int, ty_bool))
-
-#ty_ary_int = Type::Raw.new("Array", [ty_int])
-# Array#each<U>(self: Array<T>, f: T -> U) -> Array<U>
-#ary_first = Expression::Annotation.new(
-#  Expression::Abstraction.new("self", Expression::Literal.new(true)),
-#  Type::Function.new(ty_int, ty_bool))
-
-#with_ary_first = fn(e: Expression){
-#  t_ = Array<Type>.new; t_.push(Type::Variable.new("T"))
-#  ty_ary_t = Type::Raw.new("Array", t_)
-#  Expression::Extern.new("Array#first",
-#    Type::Quantification.new("T",
-#      Type::Function.new(ty_ary_t, Type::Variable.new("T"))),
-#    e)
-#}
-#with_int_ary = fn(name: String, e: Expression){
-#  t_ = Array<Type>.new; t_.push(Type::Raw.new("Int", Array<Type>.new))
-#  ty_ary_int = Type::Raw.new("Array", t_)
-#  Expression::Extern.new(name, ty_ary_int, e)
-#}
-#
-#e = with_ary_first(
-#  with_int_ary("nums",
-#               Expression::Application.new(
-#                 Expression::Variable.new("Array#first"),
-#                 Expression::Variable.new("nums"))))
-#e = int_val
 
 e = Bidi.parse("
 (extern is_odd (-> Int Bool)
