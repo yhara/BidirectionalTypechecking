@@ -1,0 +1,183 @@
+enum Sexp
+  case List(items: Array<Sexp>)
+  case Number(value: Int)
+  case Ident(value: String)
+
+  def self.parse(s: String) -> Sexp
+    Parser.new(s).parse
+  end
+
+  # https://github.com/shiika-lang/shiika/issues/380
+  def ==(other: Sexp) -> Bool
+    match self
+    when List(items)
+      match other
+      when List(items2)
+        items == items2
+      else
+        false
+      end
+    when Number(n)
+      match other
+      when Number(n2)
+        n == n2
+      else
+        false
+      end
+    when Ident(s)
+      match other
+      when Ident(s2)
+        s == s2
+      else
+        false
+      end
+    end
+  end
+
+  def to_s -> String
+    match self
+    when List(items)
+      "(" + items.map<String>{|x: Sexp| x.to_s}.join(" ") + ")"
+    when Number(n)
+      n.to_s
+    when Ident(s)
+      s
+    end
+  end
+
+  class Parser
+    def initialize(s: String)
+      @s = s.chars
+      var @cur = 0
+    end
+
+    def parse -> Sexp
+      _skip_opt_ws
+      _read_item
+    end
+
+    def _read_item -> Sexp
+      var ret = Sexp::Number.new(0)  # I mean `var ret: Sexp`
+      loop do
+        match _peek
+        when Some(c)
+          if c.bytesize == 1
+            b = c.nth_byte(0)
+            if 48 <= b <= 57
+              ret = _read_number
+              break
+            elsif c == "("
+              _getc
+              ret = _read_list
+              break
+            elsif c == ")"
+              panic "unexpected ')'"
+            else
+              ret = _read_ident
+              break
+            end
+          else
+            ret = _read_ident
+            break
+          end
+        else
+          panic "unexpected EOF"
+        end
+      end
+      ret
+    end
+
+    def _read_list -> Sexp::List
+      ary = Array<Sexp>.new
+      loop do
+        match _peek
+        when Some(c)
+          if c == ")"
+            _getc
+            break
+          end
+        end
+        ary.push(_read_item)
+        _skip_opt_ws
+      end
+      Sexp::List.new(ary)
+    end
+
+    def _read_number -> Sexp::Number
+      buf = MutableString.new
+      loop do
+        match _peek
+        when Some(c)
+          b = c.nth_byte(0)
+          if 48 <= b <= 57
+            _getc
+            buf.append(c)
+          else
+            break
+          end
+        else
+          break
+        end
+      end
+      Sexp::Number.new(buf.to_s.to_i)
+    end
+
+    def _read_ident -> Sexp::Ident
+      buf = MutableString.new
+      loop do
+        match _peek
+        when Some(c)
+          if _isspace(c) or c == ")"
+            break
+          else
+            _getc
+            buf.append(c)
+          end
+        else
+          break
+        end
+      end
+      Sexp::Ident.new(buf.to_s)
+    end
+
+    def _skip_opt_ws
+      loop do
+        match _peek
+        when Some(c)
+          if _isspace(c)
+            _getc
+            # skip
+          else
+            break
+          end
+        else
+          break
+        end
+      end
+    end
+
+    def _isspace(c: String) -> Bool
+      c == " " or c == "\n" or c == "\t"
+    end
+
+    def _getc -> Maybe<String>
+      if @cur < @s.length
+        c = @s[@cur]
+        @cur += 1
+        Some<String>.new(c)
+      else
+        None
+      end
+    end
+
+    def _peek -> Maybe<String>
+      if @cur < @s.length
+        Some<String>.new(@s[@cur])
+      else
+        None
+      end
+    end
+  end
+end
+
+#p SexpParser.new("(list (1 2 3))").parse

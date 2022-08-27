@@ -1,0 +1,124 @@
+require "./sexp.sk"
+
+enum Type
+  # (type Int)
+  # (type Bool)
+  case Raw(name: String)
+  # (type <ident>)
+  case Variable(name: String)
+  # (type ∃ <ident>)
+  case Existential(name: String)
+  # (type ∀ <ident> <type>)
+  case Quantification(name: String, type: Type)
+  # (type -> <type> <type>)
+  case Function(arg_ty: Type, ret_ty: Type)
+
+  def self.parse(x: Sexp) -> Type
+    match x
+    when Sexp::List(items)
+      if items.length >= 2 and items[0] == Sexp::Ident.new("type")
+        _parse(items.drop(1))
+      else
+        panic "not a type: #{x}"
+      end
+    else
+      panic "not a type: #{x}"
+    end
+  end
+
+  def self._parse(items: Array<Sexp>) -> Type
+    match items[0]
+    when Sexp::Ident("∃")
+      Type::Existential.new(_parse_ident(items[1]))
+    when Sexp::Ident("∀")
+      Type::Quantification.new(_parse_ident(items[1]), _parse([items[2]]))
+    when Sexp::Ident("->")
+      Type::Function.new(_parse([items[1]]), _parse([items[2]]))
+    when Sexp::Ident(s)
+      if s == "Int" or s == "Bool"
+        Type::Raw.new(s)
+      else
+        Type::Variable.new(s)
+      end
+    else
+      panic "not a type: \{items}"
+    end
+  end
+
+  def self._parse_ident(item: Sexp) -> String
+    match item
+    when Sexp::Ident(s)
+      s
+    else
+      panic "expected ident but got \{item}"
+    end
+  end
+
+  def monotype? -> Bool
+    match self
+    when Quantification(_, _)
+      false
+    when Function(arg_ty, ret_ty)
+      arg_ty.monotype? and ret_ty.monotype?
+    else
+      true
+    end
+  end
+
+  def occurs?(alpha: String) -> Bool
+    match self
+    when Raw(_)
+      false
+    when Variable(name)
+      alpha == name
+    when Function(arg_ty, ret_ty) 
+      arg_ty.occurs?(alpha) or ret_ty.occurs?(alpha)
+    when Quantification(name, type)
+      if alpha == name
+        true
+      else
+        type.occurs?(alpha)
+      end
+    when Existential(name) 
+      alpha == name
+    end
+  end
+
+  def substitute(alpha: String, t: Type) -> Type
+    match self
+    when Raw(_)
+      self
+    when Variable(name)
+      if name == alpha then t else self end
+    when Quantification(name, type)
+      if name == alpha
+        Type::Quantification.new(name, t)
+      else
+        Type::Quantification.new(name, type.substitute(alpha, t))
+      end
+    when Existential(name)
+      if name == alpha then t else self end
+    when Function(arg_ty, ret_ty) 
+      Type::Function.new(
+        arg_ty.substitute(alpha, t),
+        ret_ty.substitute(alpha, t))
+    end
+  end
+
+  def to_s -> String
+    match self
+    when Raw(name)
+      name
+    when Variable(name)
+      name
+    when Existential(name) 
+      "#{name}^"
+    when Quantification(name, type)
+      "(∀#{name}. #{type})"
+    when Function(arg_ty, ret_ty) 
+      "(#{arg_ty} -> #{ret_ty})"
+    end
+  end
+end
+
+#p Type.parse(Sexp.parse("(type Int)"))

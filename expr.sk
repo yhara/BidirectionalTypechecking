@@ -1,0 +1,75 @@
+require "./type.sk"
+require "./sexp.sk"
+
+enum Expression
+  # 123
+  # #t 
+  # #f
+  case Literal(val: Object)
+  # (extern <ident> <type> <expr>)
+  case Extern(name: String, type: Type, body: Expression)
+  # foo
+  case Variable(name: String)
+  # (^ <alpha> <expr>)
+  case Abstraction(alpha: String, expr: Expression)
+  # (<fn-expr> <expr>)
+  case Application(fn_expr: Expression, arg_expr: Expression)
+  # (: <type> <expr>)
+  case Annotation(expr: Expression, type: Type)
+
+  def self.parse(x: Sexp) -> Expression
+    match x
+    when Sexp::List(items)
+      _parse_list(items)
+    when Sexp::Number(n)
+      Literal.new(n)
+    when Sexp::Ident(s)
+      # https://github.com/shiika-lang/shiika/issues/382
+      if s == "#t" then Literal.new(true)
+      elsif s == "#f" then Literal.new(false)
+      else Variable.new(s)
+      end
+    end
+  end
+
+  def self._parse_list(items: Array<Sexp>) -> Expression
+    panic "_parse_list: list is empty" if items.empty?
+    match items[0]
+    when Sexp::Ident("extern")
+      match items[1]
+      when Sexp::Ident(name)
+        Extern.new(name, Type.parse(items[2]), parse(items[3]))
+      else
+        panic "expected extern name: \{items}"
+      end
+    when Sexp::Ident("^")
+      match items[1]
+      when Sexp::Ident(name)
+        Abstraction.new(name, parse(items[2]))
+      else
+        panic "expected alpha name: \{items}"
+      end
+    when Sexp::Ident(":")
+      Annotation.new(parse(items[1]), Type.parse(items[2]))
+    else
+      Application.new(parse(items[0]), parse(items[1]))
+    end
+  end
+
+  def to_s -> String
+    match self
+    when Literal(val)
+      val.to_s
+    when Variable(name)
+      name
+    when Extern(name, type, body)
+      "with #{name}: #{type}|#{body}"
+    when Abstraction(alpha, expr)
+      "(\\#{alpha} -> #{expr})"
+    when Application(fn_expr, arg_expr)
+      "#{fn_expr}(#{arg_expr})"
+    when Annotation(expr, type)
+      "(#{expr}: #{type})"
+    end
+  end
+end
