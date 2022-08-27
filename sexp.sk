@@ -96,6 +96,8 @@ enum Sexp
             _getc
             break
           end
+        else
+          break
         end
         ary.push(_read_item)
         _skip_opt_ws

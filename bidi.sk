@@ -154,6 +154,8 @@ class Context
       end
     when Type::Function(arg_ty, ret_ty) 
       check_well_formed(arg_ty) + check_well_formed(ret_ty)
+    when Type::List(elem_ty)
+      check_well_formed(elem_ty)
     when Type::Quantification(name, type)
       self.add(ContextElement::Variable.new(name)).check_well_formed(type)
     when Type::Existential(name)
@@ -294,6 +296,8 @@ class Bidi
     when Type::Function(a, b)
       Type::Function.new(apply_context(a, context),
                          apply_context(b, context))
+    when Type::List(elem_ty)
+      Type::List.new(apply_context(elem_ty, context))
     when Type::Quantification(alpha, a)
       Type::Quantification.new(alpha, apply_context(a, context))
     end
@@ -345,6 +349,7 @@ class Bidi
       else
         panic "!! not sure #{a} is subtype of #{b}"
       end
+
     when Pair(Type::Variable(alpha1), Type::Variable(alpha2))
       print_rule("<:Var")
       if alpha1 == alpha2
@@ -353,6 +358,7 @@ class Bidi
       else
         panic("!! #{alpha1} != #{alpha2}")
       end
+
     when Pair(Type::Existential(exist1), Type::Existential(exist2))
       print_rule("<:Exvar")
       if exist1 == exist2
@@ -361,8 +367,21 @@ class Bidi
       else
         panic("!! #{exist1} != #{exist2}")
       end
+
+    when Pair(Type::List(e1), Type::List(e2))
+      print_rule("<:List")
+      # The type parameter of `List` is assumed to be covariant (i.e. `List` is immutable list.)
+      subtype(state, context, e1, e2)
+
     when Pair(Type::Function(a1, a2), Type::Function(b1, b2))
-      panic("todo <:->")
+      print_rule("<:->")
+      # If `a1 -> a2` is a subtype of `b1 -> b2`,
+      # b1 should be a subtype of a1
+      theta = subtype(state, context, b1, a1)
+      # and a2 should be a subtype of b2.
+      subtype(state, theta, apply_context(a2, theta),
+                            apply_context(b2, theta))
+
     when Pair(Type::Quantification(alpha, a), _)
       panic("todo <:∀L")
       r1 = state.fresh_existential
@@ -372,8 +391,10 @@ class Bidi
       aa = a.substitute(alpha, Type::Existential.new(r1))
       delta = subtype(state, gamma, aa, b)
       delta.drop(ContextElement::Marker.new(r1))
+
     when Pair(_, Type::Quantification(alpha, a))
       panic("todo <:∀R")
+
     when Pair(Type::Existential(alpha), _)
       # <:InstantiateL
       if b.occurs?(alpha)
@@ -523,8 +544,10 @@ odd_p = Expression::Annotation.new(
 #e = int_val
 
 e = Bidi.parse("
-(extern is_odd (type -> Int Bool)
-  (is_odd 1)
+(extern is_odd (-> Int Bool)
+(extern list_first (∀ E (-> ([] E) E))
+(extern nums ([] Int)
+  (list_first nums)
 )
 ")
 
