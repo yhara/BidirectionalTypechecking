@@ -146,12 +146,25 @@ enum Sexp
       loop do
         match _peek
         when Some(c)
-          if _isspace(c)
+          if c == ";"
+            _skip_line
+          elsif _isspace(c)
             _getc
             # skip
           else
             break
           end
+        else
+          break
+        end
+      end
+    end
+
+    def _skip_line
+      loop do
+        match _getc
+        when Some(c)
+          break if c == "\n"
         else
           break
         end
