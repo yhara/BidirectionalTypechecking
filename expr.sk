@@ -10,7 +10,7 @@ enum Expression
   case Extern(name: String, type: Type, body: Expression)
   # foo
   case Variable(name: String)
-  # (^ <alpha> <expr>)
+  # (λ <alpha> <expr>)
   case Abstraction(alpha: String, expr: Expression)
   # (<fn-expr> <expr>)
   case Application(fn_expr: Expression, arg_expr: Expression)
@@ -42,7 +42,7 @@ enum Expression
       else
         panic "expected extern name: \{items}"
       end
-    when Sexp::Ident("^")
+    when Sexp::Ident("λ")
       match items[1]
       when Sexp::Ident(name)
         Abstraction.new(name, parse(items[2]))
