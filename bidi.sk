@@ -395,8 +395,11 @@ class Bidi
       delta = subtype(state, gamma, aa, b)
       delta.drop(ContextElement::Marker.new(r1))
 
-    when Pair(_, Type::Quantification(alpha, a))
-      panic("todo <:∀R")
+    when Pair(_, Type::Quantification(alpha, b))
+      print_rule "<:∀R"
+      theta = context.add(ContextElement::Variable.new(alpha))
+      delta = subtype(state, theta, a, b)
+      delta.drop(ContextElement::Variable.new(alpha))
 
     when Pair(Type::Existential(alpha), _)
       print_rule "<:InstantiateL"
@@ -435,9 +438,23 @@ class Bidi
     end
     match b
     when Type::Function(a1, a2)
-      panic "InstLArr"
+      print_rule "InstLArr"
+      alpha1 = state.fresh_existential
+      alpha2 = state.fresh_existential
+      print_misc "Let ^#{alpha} be ^#{alpha1}->^#{alpha2}"
+      func_ty = Type::Function.new(Type::Existential.new(alpha1), Type::Existential.new(alpha2))
+      gamma = context.replace(ContextElement::Existential.new(alpha), [
+        ContextElement::Existential.new(alpha2),
+        ContextElement::Existential.new(alpha1),
+        ContextElement::Solved.new(alpha, func_ty)
+      ])
+      theta = instantiate_r(state, gamma, a1, alpha1)
+      instantiate_l(state, theta, alpha2, apply_context(a2, theta))
     when Type::Quantification(beta, b)
-      panic "todo InstLAllR"
+      print_rule "InstLAllR"
+      gamma = context.add(ContextElement::Variable.new(beta))
+      delta = instantiate_l(state, gamma, alpha, b)
+      delta.drop(ContextElement::Variable.new(beta))
     when Type::Existential(beta)
       print_rule "InstLReach"
       print_misc "^#{beta} = ^#{alpha}"
@@ -447,7 +464,7 @@ class Bidi
       inserts_.push(ContextElement::Solved.new(beta, Type::Existential.new(alpha)))
       context.replace(ContextElement::Existential.new(beta), inserts_)
     else
-      panic "todo instantiate_l"
+      panic "instantiate_l failed"
     end
   end
 
@@ -483,7 +500,14 @@ class Bidi
       theta = instantiate_l(state, gamma, alpha1, a1)
       instantiate_r(state, theta, apply_context(a2, theta), alpha2)
     when Type::Quantification(beta, b)
-      panic "todo InstRAllL"
+      print_rule "InstRAllL"
+      beta1 = state.fresh_existential
+      gamma = context.
+        add(ContextElement::Marker.new(beta1)).
+        add(ContextElement::Existential.new(beta1))
+      bb = b.substitute(beta, Type::Existential.new(beta1))
+      delta = instantiate_r(state, gamma, bb, alpha)
+      delta.drop(ContextElement::Marker.new(beta1))
     when Type::Existential(beta)
       print_rule "InstRReach"
       print_misc "^#{beta} = ^#{alpha}"
@@ -556,12 +580,17 @@ map_fn_type = "(-> E R)"
 e = Bidi.parse("
 ;(extern is_odd (-> Int Bool)
 ;(extern nums ([] int)
-(extern list_first (∀ E (-> ([] E) E))
 ;(extern list_map (∀ E (∀ R (-> #{map_fn_type} (-> ([] E) ([] R)))))
 ;(extern board ([] ([] Bool))
+
+(extern list_first (∀ E (-> ([] E) E))
 (extern fn_list (∀ X ([] (-> X X)))
-(extern fn_list ([] (∀ X (-> X X)))
   ((list_first fn_list) 123)
-")
+
+;(extern list_first (∀ E (-> ([] E) E))
+;(extern fn_list ([] (∀ X (-> X X)))
+;  (list_first fn_list)
+
+") # Last closing parenthesis may be omitted.
 
 Bidi.new.run(e)
