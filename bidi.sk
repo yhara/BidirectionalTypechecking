@@ -2,9 +2,9 @@ require "./expr.sk"
 
 enum ContextElement
   case Variable(name: String)
-  case Existential(name: String)
-  case Solved(name: String, type: Type)
-  case Marker(name: String)
+  case Existential(ext: Ext)
+  case Solved(ext: Ext, type: Type)
+  case Marker(ext: Ext)
   case TypedVariable(name: String, type: Type)
 
   def ==(other: ContextElement) -> Bool
@@ -15,12 +15,12 @@ enum ContextElement
     match self
     when Variable(name)
       name
-    when Existential(name) 
-      "^#{name}"
+    when Existential(ext) 
+      ext.to_s
     when Solved(name, type)
       "^#{name}:#{type}"
-    when Marker(a) 
-      "▶^#{a}"
+    when Marker(ext) 
+      "▶#{ext}"
     when TypedVariable(x, ty)
       "#{x}:#{ty}"
     end
@@ -63,7 +63,7 @@ class Context
   end
 
   # Returns the solved type of `^α`, if any.
-  def get_solved(alpha: String) -> Maybe<Type>
+  def get_solved(alpha: Ext) -> Maybe<Type>
     var ret = None
     @_elements.each do |ele: ContextElement|
       match ele
@@ -81,8 +81,8 @@ class Context
   def has_existential?(alpha: String) -> Bool
     @_elements.any?{|e: ContextElement|
       match e
-      when ContextElement::Existential(name)
-        name == alpha
+      when ContextElement::Existential(ext)
+        ext.name == alpha
       else
         false
       end
@@ -158,11 +158,11 @@ class Context
       check_well_formed(elem_ty)
     when Type::Quantification(name, type)
       self.add(ContextElement::Variable.new(name)).check_well_formed(type)
-    when Type::Existential(name)
-      if self.has_existential?(name) or get_solved(name).some?
+    when Type::Existential(ext)
+      if self.has_existential?(ext.name) or get_solved(ext).some?
         ok
       else
-        [Error.new("unknown existential `#{name}'")]
+        [Error.new("unknown existential `#{ext}'")]
       end
     end
   end
@@ -183,18 +183,6 @@ class Context
   end
 end
 
-class State
-  def initialize
-    var @id = 0
-  end
-
-  def fresh_existential -> String
-    ret = "#{@id}"
-    @id += 1
-    ret
-  end
-end
-
 class Bidi
   def self.parse(s: String) -> Expression
     Expression.parse(Sexp.parse(s))
@@ -207,13 +195,13 @@ class Bidi
   end
 
   def synth(expr: Expression) -> Type
-    t_c = synthesizes_to(State.new, Context.empty, expr)
+    t_c = synthesizes_to(Context.empty, expr)
     puts "(synthesized type: \{t_c.fst}, context: \{t_c.snd})"
     apply_context(t_c.fst, t_c.snd)
   end
 
   # Figure 11. Algorithmic typing
-  def synthesizes_to(state: State, context: Context, expr: Expression) -> Pair<Type, Context>
+  def synthesizes_to(context: Context, expr: Expression) -> Pair<Type, Context>
     print_helper("synth", expr.to_s, "", context)
     match expr
     when Expression::Literal(val)
@@ -236,36 +224,27 @@ class Bidi
       end
     when Expression::Extern(name, type, body_expr)
       print_rule("Extern")
-      ## Add the external variable to the context
-      #theta = context.add(ContextElement::TypedVariable.new(name, type))
-      #match synthesizes_to(state, theta, body_expr)
-      #when Pair(t, delta)
-      #  # Remove the external variable from the context
-      #  delta2 = delta.replace(ContextElement::TypedVariable.new(name, type),
-      #                         Array<ContextElement>.new)
-      #  Pair<Type, Context>.new(t, delta2)
-      #end
       context.assert_well_formed(type)
       theta = context.add(ContextElement::TypedVariable.new(name, type))
-      synthesizes_to(state, theta, body_expr)
+      synthesizes_to(theta, body_expr)
 
     when Expression::Annotation(expr, anno_type)
       print_rule("Anno")
       context.assert_well_formed(anno_type)
-      delta = checks_against(state, context, expr, anno_type)
+      delta = checks_against(context, expr, anno_type)
       Pair<Type, Context>.new(anno_type, delta)
 
     # If the expr is `λvarname . expr`...
     when Expression::Abstraction(varname, expr)
       print_rule("->I=>");
       # Assume its type as `^α -> ^β`
-      alpha = state.fresh_existential
-      beta = state.fresh_existential
+      alpha = Ext.new
+      beta = Ext.new
       gamma = context.
         add(ContextElement::Existential.new(alpha)).
         add(ContextElement::Existential.new(beta)).
         add(ContextElement::TypedVariable.new(varname, Type::Existential.new(alpha)))
-      delta = checks_against(state, gamma, expr, Type::Existential.new(beta))
+      delta = checks_against(gamma, expr, Type::Existential.new(beta))
       func = Type::Function.new(Type::Existential.new(alpha),
                                 Type::Existential.new(beta))
       Pair<Type, Context>.new(func, delta)
@@ -274,9 +253,9 @@ class Bidi
     when Expression::Application(e1, e2)
       print_rule("->E")
       # Synth the type of the function `e1`
-      match synthesizes_to(state, context, e1)
+      match synthesizes_to(context, e1)
       when Pair(a, theta)
-        application_synthesizes_to(state, theta, apply_context(a, theta), e2)
+        application_synthesizes_to(theta, apply_context(a, theta), e2)
       end
     end
   end
@@ -307,7 +286,7 @@ class Bidi
   end
 
   # Figure 11. Algorithmic typing
-  def checks_against(state: State, context: Context, expr: Expression, type: Type) -> Context
+  def checks_against(context: Context, expr: Expression, type: Type) -> Context
     print_helper("check", expr.to_s, type.to_s, context)
     context.assert_well_formed(type)
     match Pair<Expression, Type>.new(expr, type)
@@ -318,26 +297,26 @@ class Bidi
       typed_var = ContextElement::TypedVariable.new(x, a)
       gamma = context.add(typed_var)
       # Check the type of the function body
-      checks_against(state, gamma, e, b).drop(typed_var)
+      checks_against(gamma, e, b).drop(typed_var)
     when Pair(_, Type::Quantification(alpha, a))
       # Check the expr can be of type ∀α.A
       print_rule("∀I")
       v = ContextElement::Variable.new(alpha)
       gamma = context.add(v)
-      checks_against(state, gamma, expr, a).drop(v)
+      checks_against(gamma, expr, a).drop(v)
     else
       print_rule("Sub")
       # Let `a` be the synthesized type of `expr`
-      match synthesizes_to(state, context, expr)
+      match synthesizes_to(context, expr)
       when Pair(a, theta)
-        subtype(state, theta, apply_context(a, theta), apply_context(type, theta))
+        subtype(theta, apply_context(a, theta), apply_context(type, theta))
       end
     end
   end
 
   # Figure 9. Algorithmic subtyping
   # Checks if `a` is (or, can be) a subtype of `b`.
-  def subtype(state: State, context: Context, a: Type, b: Type) -> Context
+  def subtype(context: Context, a: Type, b: Type) -> Context
     ok = context.clone
     print_helper("subtype", a.to_s, b.to_s, context)
     context.assert_well_formed(a)
@@ -374,31 +353,31 @@ class Bidi
     when Pair(Type::List(e1), Type::List(e2))
       print_rule("<:List")
       # The type parameter of `List` is assumed to be covariant (i.e. `List` is immutable list.)
-      subtype(state, context, e1, e2)
+      subtype(context, e1, e2)
 
     when Pair(Type::Function(a1, a2), Type::Function(b1, b2))
       print_rule("<:->")
       # If `a1 -> a2` is a subtype of `b1 -> b2`,
       # b1 should be a subtype of a1
-      theta = subtype(state, context, b1, a1)
+      theta = subtype(context, b1, a1)
       # and a2 should be a subtype of b2.
-      subtype(state, theta, apply_context(a2, theta),
+      subtype(theta, apply_context(a2, theta),
                             apply_context(b2, theta))
 
     when Pair(Type::Quantification(alpha, a), _)
       print_rule("<:∀L")
-      r1 = state.fresh_existential
+      r1 = Ext.new
       gamma = context.
         add(ContextElement::Marker.new(r1)).
         add(ContextElement::Existential.new(r1))
       aa = a.substitute(alpha, Type::Existential.new(r1))
-      delta = subtype(state, gamma, aa, b)
+      delta = subtype(gamma, aa, b)
       delta.drop(ContextElement::Marker.new(r1))
 
     when Pair(_, Type::Quantification(alpha, b))
       print_rule "<:∀R"
       theta = context.add(ContextElement::Variable.new(alpha))
-      delta = subtype(state, theta, a, b)
+      delta = subtype(theta, a, b)
       delta.drop(ContextElement::Variable.new(alpha))
 
     when Pair(Type::Existential(alpha), _)
@@ -406,14 +385,14 @@ class Bidi
       if b.occurs?(alpha)
         panic "!! Circular before instantiate_l \{alpha}, \{b}"
       else
-        instantiate_l(state, context, alpha, b)
+        instantiate_l(context, alpha, b)
       end
     when Pair(_, Type::Existential(alpha))
       print_rule "<:InstantiateR"
       if a.occurs?(alpha)
         panic "!! Circular before instantiate_r \{alpha}, \{a}"
       else
-        instantiate_r(state, context, a, alpha)
+        instantiate_r(context, a, alpha)
       end
     else
       panic("!! couldn't subtype #{a} and #{b}")
@@ -422,8 +401,8 @@ class Bidi
 
   # Figure 10. Instantiation
   # Instantiate an existential variable `^α` such that it is a subtype of `b`.
-  def instantiate_l(state: State, context: Context, alpha: String, b: Type) -> Context
-    print_helper("instantiate_l", "^#{alpha}", b.to_s, context)
+  def instantiate_l(context: Context, alpha: Ext, b: Type) -> Context
+    print_helper("instantiate_l", alpha.to_s, b.to_s, context)
     lr = context.split_at(ContextElement::Existential.new(alpha))
     left_context = lr.fst
     right_context = lr.snd
@@ -433,31 +412,31 @@ class Bidi
       print_rule("InstLSolve")
       inserts = Array<ContextElement>.new()
       inserts.push(ContextElement::Solved.new(alpha, b))
-      print_misc "^#{alpha} is solved to #{b}."
+      print_misc "#{alpha} is solved to #{b}."
       return context.replace(ContextElement::Existential.new(alpha), inserts)
     end
     match b
     when Type::Function(a1, a2)
       print_rule "InstLArr"
-      alpha1 = state.fresh_existential
-      alpha2 = state.fresh_existential
-      print_misc "Let ^#{alpha} be ^#{alpha1}->^#{alpha2}"
+      alpha1 = Ext.new
+      alpha2 = Ext.new
+      print_misc "Let #{alpha} be ^#{alpha1}->^#{alpha2}"
       func_ty = Type::Function.new(Type::Existential.new(alpha1), Type::Existential.new(alpha2))
       gamma = context.replace(ContextElement::Existential.new(alpha), [
         ContextElement::Existential.new(alpha2),
         ContextElement::Existential.new(alpha1),
         ContextElement::Solved.new(alpha, func_ty)
       ])
-      theta = instantiate_r(state, gamma, a1, alpha1)
-      instantiate_l(state, theta, alpha2, apply_context(a2, theta))
+      theta = instantiate_r(gamma, a1, alpha1)
+      instantiate_l(theta, alpha2, apply_context(a2, theta))
     when Type::Quantification(beta, b)
       print_rule "InstLAllR"
       gamma = context.add(ContextElement::Variable.new(beta))
-      delta = instantiate_l(state, gamma, alpha, b)
+      delta = instantiate_l(gamma, alpha, b)
       delta.drop(ContextElement::Variable.new(beta))
     when Type::Existential(beta)
       print_rule "InstLReach"
-      print_misc "^#{beta} = ^#{alpha}"
+      print_misc "#{beta} = #{alpha}"
       right_context.assert_well_formed(b)
       # shiika-lang/shiika#388
       inserts_ = Array<ContextElement>.new()
@@ -470,8 +449,8 @@ class Bidi
 
   # Figure 10. Instantiation
   # Instantiate an existential variable `^α` such that it is a supertype of `a`.
-  def instantiate_r(state: State, context: Context, a: Type, alpha: String) -> Context
-    print_helper("instantiate_r", a.to_s, "^#{alpha}", context)
+  def instantiate_r(context: Context, a: Type, alpha: Ext) -> Context
+    print_helper("instantiate_r", a.to_s, alpha.to_s, context)
     lr = context.split_at(ContextElement::Existential.new(alpha))
     left_context = lr.fst
     right_context = lr.snd
@@ -481,36 +460,36 @@ class Bidi
       print_rule("InstRSolve")
       inserts = Array<ContextElement>.new()
       inserts.push(ContextElement::Solved.new(alpha, a))
-      print_misc "^#{alpha} is solved to #{a}."
+      print_misc "#{alpha} is solved to #{a}."
       return context.replace(ContextElement::Existential.new(alpha), inserts)
     end
     match a
     when Type::Function(a1, a2)
       print_rule "InstRArr"
       # Let `^α` be `^α1 -> ^α2`
-      alpha1 = state.fresh_existential
-      alpha2 = state.fresh_existential
-      print_misc "Let ^#{alpha} be ^#{alpha1}->^#{alpha2}"
+      alpha1 = Ext.new
+      alpha2 = Ext.new
+      print_misc "Let #{alpha} be #{alpha1}->#{alpha2}"
       func_ty = Type::Function.new(Type::Existential.new(alpha1), Type::Existential.new(alpha2))
       gamma = context.replace(ContextElement::Existential.new(alpha), [
         ContextElement::Existential.new(alpha2),
         ContextElement::Existential.new(alpha1),
         ContextElement::Solved.new(alpha, func_ty)
       ])
-      theta = instantiate_l(state, gamma, alpha1, a1)
-      instantiate_r(state, theta, apply_context(a2, theta), alpha2)
+      theta = instantiate_l(gamma, alpha1, a1)
+      instantiate_r(theta, apply_context(a2, theta), alpha2)
     when Type::Quantification(beta, b)
       print_rule "InstRAllL"
-      beta1 = state.fresh_existential
+      beta1 = Ext.new
       gamma = context.
         add(ContextElement::Marker.new(beta1)).
         add(ContextElement::Existential.new(beta1))
       bb = b.substitute(beta, Type::Existential.new(beta1))
-      delta = instantiate_r(state, gamma, bb, alpha)
+      delta = instantiate_r(gamma, bb, alpha)
       delta.drop(ContextElement::Marker.new(beta1))
     when Type::Existential(beta)
       print_rule "InstRReach"
-      print_misc "^#{beta} = ^#{alpha}"
+      print_misc "#{beta} = #{alpha}"
       right_context.assert_well_formed(a)
       # shiika-lang/shiika#388
       inserts_ = Array<ContextElement>.new()
@@ -525,34 +504,34 @@ class Bidi
   # Synthesizes a type of a function application.
   # - `type`: The type of the function
   # - `expr`: The argument
-  def application_synthesizes_to(state: State, context: Context, fn_type: Type, expr: Expression) -> Pair<Type, Context>
+  def application_synthesizes_to(context: Context, fn_type: Type, expr: Expression) -> Pair<Type, Context>
     print_helper("app_synth", expr.to_s, fn_type.to_s, context)
     match fn_type
     when Type::Existential(alpha)
       print_rule("^αApp")
       # Let `^α` be `^α1 -> ^α2`.
-      alpha1 = state.fresh_existential
-      alpha2 = state.fresh_existential
-      print_misc "Let ^#{alpha} be ^#{alpha1}->^#{alpha2}."
+      alpha1 = Ext.new
+      alpha2 = Ext.new
+      print_misc "Let #{alpha} be #{alpha1}->#{alpha2}."
       func_ty = Type::Function.new(Type::Existential.new(alpha1), Type::Existential.new(alpha2))
       gamma = context.
         add(ContextElement::Existential.new(alpha2)).
         add(ContextElement::Existential.new(alpha1)).
         add(ContextElement::Solved.new(alpha, func_ty))
-      delta = checks_against(state, gamma, expr, Type::Existential.new(alpha1))
+      delta = checks_against(gamma, expr, Type::Existential.new(alpha1))
       Pair<Type, Context>.new(Type::Existential.new(alpha2), delta)
     when Type::Quantification(alpha, a)
       print_rule("∀App")
       # Let the value of the type variable `alpha` as `ext`.
-      ext = state.fresh_existential
+      ext = Ext.new
       gamma = context.add(ContextElement::Existential.new(ext))
       substituted_a = a.substitute(alpha, Type::Existential.new(ext))
-      application_synthesizes_to(state, gamma, substituted_a, expr)
+      application_synthesizes_to(gamma, substituted_a, expr)
     when Type::Function(arg_ty, ret_ty)
       print_rule("->App")
       # If `type` is neither existential or quantification,
       # Just check the argument type
-      delta = checks_against(state, context, expr, arg_ty)
+      delta = checks_against(context, expr, arg_ty)
       Pair<Type, Context>.new(ret_ty, delta)
     else
       panic "!! application_synthesizes_to: \{fn_type} is not a function type"

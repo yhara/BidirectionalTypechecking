@@ -1,4 +1,5 @@
 require "./sexp.sk"
+require "./ext.sk"
 
 enum Type
   # (type Int)
@@ -7,7 +8,7 @@ enum Type
   # (type <ident>)
   case Variable(name: String)
   # (type ∃ <ident>)
-  case Existential(name: String)
+  case Existential(ext: Ext)
   # (type ∀ <ident> <type>)
   case Quantification(name: String, type: Type)
   # (type -> <type> <type>)
@@ -19,8 +20,6 @@ enum Type
     match x
     when Sexp::List(items)
       match items[0]
-      when Sexp::Ident("∃")
-        Type::Existential.new(_parse_ident(items[1]))
       when Sexp::Ident("∀")
         Type::Quantification.new(_parse_ident(items[1]), parse(items[2]))
       when Sexp::Ident("->")
@@ -67,7 +66,7 @@ enum Type
   end
 
   # Returns if this type contains an Existential of the name `alpha`
-  def occurs?(alpha: String) -> Bool
+  def occurs?(alpha: Ext) -> Bool
     match self
     when Raw(_)
       false
@@ -78,13 +77,9 @@ enum Type
     when List(elem_ty)
       elem_ty.occurs?(alpha)
     when Quantification(name, type)
-      if alpha == name
-        true
-      else
-        type.occurs?(alpha)
-      end
-    when Existential(name) 
-      alpha == name
+      type.occurs?(alpha)
+    when Existential(ext) 
+      alpha == ext
     end
   end
 
@@ -102,8 +97,8 @@ enum Type
       else
         Type::Quantification.new(name, type.substitute(alpha, t))
       end
-    when Existential(name)
-      if name == alpha then t else self end
+    when Existential(ext)
+      if ext.name == alpha then t else self end
     when Function(arg_ty, ret_ty) 
       Type::Function.new(
         arg_ty.substitute(alpha, t),
@@ -119,8 +114,8 @@ enum Type
       name
     when Variable(name)
       name
-    when Existential(name) 
-      "^#{name}"
+    when Existential(ext) 
+      ext.to_s
     when Quantification(name, type)
       "∀#{name}.#{type}"
     when Function(arg_ty, ret_ty) 
