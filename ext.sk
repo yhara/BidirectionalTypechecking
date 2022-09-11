@@ -1,0 +1,18 @@
+class Ext
+  def self.initialize
+    var @last_id = -1
+  end
+
+  def self.new_id -> String
+    @last_id += 1
+    "^#{last_id}"
+  end
+
+  def initialize
+    @name = Ext.new_id
+  end
+
+  def to_s -> String
+    @name
+  end
+end
